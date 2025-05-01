@@ -1,0 +1,86 @@
+jQuery(document).ready(function($) {
+    $('#location-search-form').on('submit', function(e) {
+        e.preventDefault();
+        
+        const address = $('#search-address').val();
+        const geocoder = new google.maps.Geocoder();
+        
+        geocoder.geocode({ 'address': address }, function(results, status) {
+            if (status === 'OK') {
+                const latitude = results[0].geometry.location.lat();
+                const longitude = results[0].geometry.location.lng();
+                
+                $.ajax({
+                    url: ajaxurl,
+                    method: 'POST',
+                    data: {
+                        action: 'find_nearby_users',
+                        latitude: latitude,
+                        longitude: longitude
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            const resultsContainer = $('#nearby-users-results');
+                            resultsContainer.empty();
+                            
+                            if (response.data.length > 0) {
+                                const userList = $('<div>').addClass('nearby-users-grid');
+                                
+                                response.data.forEach(function(user) {
+                                    const userCard = $('<div>').addClass('user-card');
+                                    
+                                    // Profile Picture
+                                    if (user.profile_picture) {
+                                        $('<img>')
+                                            .attr('src', user.profile_picture)
+                                            .attr('alt', user.full_name || 'User Profile')
+                                            .addClass('user-profile-picture')
+                                            .appendTo(userCard);
+                                    }
+                                    
+                                    // User Details
+                                    const userDetails = $('<div>').addClass('user-details');
+                                    
+                                    if (user.full_name) {
+                                        $('<h3>').text(user.full_name).appendTo(userDetails);
+                                    }
+                                    
+                                    if (user.telephone) {
+                                        $('<p>')
+                                            .html(`<strong>Phone:</strong> ${user.telephone}`)
+                                            .appendTo(userDetails);
+                                    }
+                                    
+                                    if (user.email) {
+                                        $('<p>')
+                                            .html(`<strong>Email:</strong> ${user.email}`)
+                                            .appendTo(userDetails);
+                                    }
+                                    
+                                    // Distance
+                                    $('<p>')
+                                        .html(`<strong>Distance:</strong> ${user.distance.toFixed(2)} miles away`)
+                                        .appendTo(userDetails);
+                                    
+                                    // Additional Information
+                                    if (user.additional_info) {
+                                        $('<p>')
+                                            .html(`<strong>Additional Info:</strong> ${user.additional_info}`)
+                                            .appendTo(userDetails);
+                                    }
+                                    
+                                    userDetails.appendTo(userCard);
+                                    userCard.appendTo(userList);
+                                });
+                                
+                                resultsContainer.append(userList);
+                            } else {
+                                resultsContainer.text('No nearby users found.');
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+});

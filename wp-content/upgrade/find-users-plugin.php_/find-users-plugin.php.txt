@@ -1,0 +1,306 @@
+<?php
+/*
+Plugin Name: Enhanced Nearby Users Finder
+Description: Find and display detailed information for users near a given address
+Version: 1.1
+Author: Your Name
+*/
+
+class EnhancedNearbyUsersFinder {
+    public function __construct() {
+        // Register activation hook to create custom tables
+        register_activation_hook(__FILE__, [$this, 'create_location_table']);
+        
+        // Add admin menu for managing locations
+        add_action('admin_menu', [$this, 'add_admin_menu']);
+        
+        // Add shortcode for displaying nearby users
+        add_shortcode('nearby_users', [$this, 'nearby_users_shortcode']);
+        
+        // Enqueue scripts and styles
+        add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend_scripts']);
+        
+        // Add custom meta box for user profile
+        add_action('admin_init', [$this, 'add_user_meta_box']);
+        
+        // Save user location and details
+        add_action('wp_ajax_save_user_location', [$this, 'save_user_location']);
+        
+        // Frontend AJAX action for finding nearby users
+        add_action('wp_ajax_nopriv_find_nearby_users', [$this, 'find_nearby_users']);
+        add_action('wp_ajax_find_nearby_users', [$this, 'find_nearby_users']);
+    }
+
+    public function create_location_table() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'enhanced_user_locations';
+        
+        $charset_collate = $wpdb->get_charset_collate();
+        
+        $sql = "CREATE TABLE $table_name (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) NOT NULL,
+            latitude decimal(10,7) NOT NULL,
+            longitude decimal(10,7) NOT NULL,
+            address text NOT NULL,
+            full_name varchar(255),
+            telephone varchar(20),
+            email varchar(100),
+            profile_picture varchar(255),
+            additional_info text,
+            PRIMARY KEY  (id)
+        ) $charset_collate;";
+        
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+
+    public function add_admin_menu() {
+        add_menu_page(
+            'Enhanced Nearby Users',
+            'Nearby Users',
+            'manage_options',
+            'enhanced-nearby-users',
+            [$this, 'nearby_users_admin_page'],
+            'dashicons-location-alt',
+            20
+        );
+    }
+
+    public function nearby_users_admin_page() {
+        ?>
+        <div class="wrap">
+            <h1>Manage Nearby Users</h1>
+            <form id="user-location-form" method="post" enctype="multipart/form-data">
+                <table class="form-table">
+                    <tr>
+                        <th>User</th>
+                        <td>
+                            <?php 
+                            wp_dropdown_users([
+                                'name' => 'user_id',
+                                'show_option_none' => 'Select User'
+                            ]); 
+                            ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Full Name</th>
+                        <td>
+                            <input type="text" name="full_name" class="regular-text" 
+                                   placeholder="Enter full name">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Address</th>
+                        <td>
+                            <input type="text" name="address" class="regular-text" 
+                                   id="address-input" placeholder="Enter full address">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Coordinates</th>
+                        <td>
+                            <input type="text" name="latitude" placeholder="Latitude" readonly>
+                            <input type="text" name="longitude" placeholder="Longitude" readonly>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Telephone Number</th>
+                        <td>
+                            <input type="tel" name="telephone" class="regular-text"
+                                   placeholder="Enter telephone number">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Email</th>
+                        <td>
+                            <input type="email" name="email" class="regular-text"
+                                   placeholder="Enter email address">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Profile Picture</th>
+                        <td>
+                            <input type="file" name="profile_picture" accept="image/*">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Additional Information</th>
+                        <td>
+                            <textarea name="additional_info" rows="4" class="large-text"
+                                      placeholder="Enter any additional information"></textarea>
+                        </td>
+                    </tr>
+                </table>
+                <?php 
+                wp_nonce_field('save_user_location_action', 'user_location_nonce');
+                submit_button('Save User Location'); 
+                ?>
+            </form>
+        </div>
+        <script>
+        // Google Maps Geocoding
+        function initGeocoding() {
+            const addressInput = document.getElementById('address-input');
+            const geocoder = new google.maps.Geocoder();
+            
+            addressInput.addEventListener('blur', function() {
+                geocoder.geocode({ 'address': this.value }, function(results, status) {
+                    if (status === 'OK') {
+                        const lat = results[0].geometry.location.lat();
+                        const lng = results[0].geometry.location.lng();
+                        document.querySelector('input[name="latitude"]').value = lat;
+                        document.querySelector('input[name="longitude"]').value = lng;
+                    }
+                });
+            });
+        }
+        
+        // AJAX form submission
+        jQuery(document).ready(function($) {
+            $('#user-location-form').on('submit', function(e) {
+                e.preventDefault();
+                
+                var formData = new FormData(this);
+                formData.append('action', 'save_user_location');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        if (response.success) {
+                            alert('User location saved successfully!');
+                        } else {
+                            alert('Error saving user location: ' + response.data);
+                        }
+                    }
+                });
+            });
+        });
+        </script>
+        <?php
+    }
+
+    public function save_user_location() {
+        // Verify nonce for security
+        check_ajax_referer('save_user_location_action', 'user_location_nonce');
+        
+        // Check user capabilities
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+        
+        // Sanitize and validate input
+        $user_id = intval($_POST['user_id']);
+        $latitude = floatval($_POST['latitude']);
+        $longitude = floatval($_POST['longitude']);
+        $address = sanitize_text_field($_POST['address']);
+        $full_name = sanitize_text_field($_POST['full_name']);
+        $telephone = sanitize_text_field($_POST['telephone']);
+        $email = sanitize_email($_POST['email']);
+        $additional_info = sanitize_textarea_field($_POST['additional_info']);
+        
+        // Handle file upload
+        $profile_picture = '';
+        if (!empty($_FILES['profile_picture']['name'])) {
+            $upload = wp_handle_upload($_FILES['profile_picture'], [
+                'test_form' => false
+            ]);
+            
+            if (!isset($upload['error'])) {
+                $profile_picture = $upload['url'];
+            }
+        }
+        
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'enhanced_user_locations';
+        
+        // Check if user location already exists
+        $existing = $wpdb->get_row($wpdb->prepare(
+            "SELECT id FROM $table_name WHERE user_id = %d",
+            $user_id
+        ));
+        
+        $data = [
+            'user_id' => $user_id,
+            'latitude' => $latitude,
+            'longitude' => $longitude,
+            'address' => $address,
+            'full_name' => $full_name,
+            'telephone' => $telephone,
+            'email' => $email,
+            'profile_picture' => $profile_picture,
+            'additional_info' => $additional_info
+        ];
+        
+        if ($existing) {
+            // Update existing record
+            $result = $wpdb->update(
+                $table_name, 
+                $data, 
+                ['user_id' => $user_id]
+            );
+        } else {
+            // Insert new record
+            $result = $wpdb->insert($table_name, $data);
+        }
+        
+        if ($result !== false) {
+            wp_send_json_success('User location saved');
+        } else {
+            wp_send_json_error('Database error');
+        }
+    }
+
+    public function nearby_users_shortcode($atts) {
+        // Shortcode to display nearby users
+        ob_start();
+        ?>
+        <div id="nearby-users-finder">
+            <form id="location-search-form">
+                <input type="text" id="search-address" placeholder="Enter your address">
+                <button type="submit">Find Nearby Users</button>
+            </form>
+            <div id="nearby-users-results"></div>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    public function enqueue_frontend_scripts() {
+        // Enqueue Google Maps and custom JS
+        wp_enqueue_script('google-maps', 'https://maps.googleapis.com/maps/api/js?key=API_KEY&libraries=places', [], null, true);
+        wp_enqueue_script('nearby-users-script', plugin_dir_url(__FILE__) . 'nearby-users.js', ['jquery'], '1.1', true);
+        wp_enqueue_style('nearby-users-style', plugin_dir_url(__FILE__) . 'nearby-users.css');
+    }
+
+    public function find_nearby_users() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'enhanced_user_locations';
+        
+        $latitude = floatval($_POST['latitude']);
+        $longitude = floatval($_POST['longitude']);
+        $radius = 10; // Default radius in miles
+        
+        $nearby_users = $wpdb->get_results($wpdb->prepare(
+            "SELECT user_id, full_name, telephone, email, profile_picture, additional_info,
+            (6371 * acos(cos(radians(%f)) * cos(radians(latitude)) * 
+            cos(radians(longitude) - radians(%f)) + 
+            sin(radians(%f)) * sin(radians(latitude)))) AS distance 
+            FROM $table_name 
+            HAVING distance < %f 
+            ORDER BY distance 
+            LIMIT 10",
+            $latitude, $longitude, $latitude, $radius
+        ));
+        
+        wp_send_json_success($nearby_users);
+    }
+}
+
+// Initialize the plugin
+$enhanced_nearby_users_finder = new EnhancedNearbyUsersFinder();
